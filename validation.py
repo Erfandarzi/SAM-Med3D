@@ -91,6 +91,34 @@ def postprocess_masks(low_res_masks, image_size, original_size):
         masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         pad = None 
     return masks, pad
+import matplotlib.pyplot as plt
+
+import matplotlib.pyplot as plt
+
+def visualize_slices(input_slice, gt_slice, pred_slice, slice_idx, save_path=None):
+    plt.figure(figsize=(12, 4))
+    plt.subplot(1, 3, 1)
+    plt.imshow(input_slice, cmap='gray')
+    plt.title(f'Input Slice {slice_idx}')
+    plt.axis('off')
+
+    plt.subplot(1, 3, 2)
+    plt.imshow(gt_slice, cmap='gray')
+    plt.title(f'Ground Truth Slice {slice_idx}')
+    plt.axis('off')
+
+    plt.subplot(1, 3, 3)
+    plt.imshow(pred_slice, cmap='gray')
+    plt.title(f'Predicted Mask Slice {slice_idx}')
+    plt.axis('off')
+
+    # Save the figure if a save path is provided
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path)
+
+    plt.show()
+
 
 def sam_decoder_inference(target_size, points_coords, points_labels, model, image_embeddings, mask_inputs=None, multimask = False):
     with torch.no_grad():
@@ -334,6 +362,9 @@ if __name__ == "__main__":
 
     out_dice = dict()
     out_dice_all = OrderedDict()
+    max_visualizations = 15
+    visualization_counter = 0
+
 
     for batch_data in tqdm(test_dataloader):
         image3D, gt3D, img_name = batch_data
@@ -344,6 +375,8 @@ if __name__ == "__main__":
         dataset = os.path.basename(os.path.dirname(os.path.dirname(img_name[0])))
         vis_root = os.path.join(os.path.dirname(__file__), args.vis_path, modality, dataset)
         pred_path = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}.nii.gz"))
+        visualization_base_dir = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}"))
+
         if(os.path.exists(pred_path)):
             iou_list, dice_list = [], []
             for iter in range(args.num_clicks):
@@ -358,6 +391,18 @@ if __name__ == "__main__":
                     image3D, gt3D, sam_model_tune, device=device, 
                     click_method=args.point_method, num_clicks=args.num_clicks, 
                     prev_masks=None)
+                if visualization_counter < max_visualizations:
+                    slice_idx = image3D.shape[-1] // 2  # Assuming last dimension is the depth
+                    input_slice = image3D[0, 0, :, :, slice_idx].cpu().numpy()
+                    gt_slice = gt3D[0, 0, :, :, slice_idx].cpu().numpy()
+                    pred_slice = seg_mask_list[-1][:, :, slice_idx]  # Assuming the last prediction
+                    save_path = visualization_base_dir+ f'visualization_slice_{slice_idx}.png'
+
+
+                    # Call the visualization function
+                    visualize_slices(input_slice, gt_slice, pred_slice, slice_idx, save_path)
+
+                    visualization_counter += 1
             elif(args.dim==2):
                 seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict2D(
                     image3D, gt3D, sam_model_tune, device=device, target_size=args.image_size,
