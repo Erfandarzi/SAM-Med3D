@@ -396,7 +396,7 @@ if __name__ == "__main__":
                     input_slice = image3D[0, 0, :, :, slice_idx].cpu().numpy()
                     gt_slice = gt3D[0, 0, :, :, slice_idx].cpu().numpy()
                     pred_slice = seg_mask_list[-1][:, :, slice_idx]  # Assuming the last prediction
-                    save_path = visualization_base_dir+ f'visualization_slice_{slice_idx}.png'
+                    save_path = visualization_base_dir+"_"+f'visualization_slice_{slice_idx}.png'
 
 
                     # Call the visualization function
