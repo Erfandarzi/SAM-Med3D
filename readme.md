@@ -1,2 +1,2 @@
 # SAM-Med3D 
-Small diffuse lesion
+3D SAM for Small diffuse lesion detection
