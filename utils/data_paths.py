@@ -1,5 +1,11 @@
-img_datas = ["data/train/brain_lesion/Task502_BCHUNC","data/train/brain_lesion/Task501_HIE"]
-all_datasets=["Task502_BCHUNC","HIE_smalldiffuse"]
+#for training
+img_datas = ["data/train/brain_lesion/Task502_BCHUNC","data/train/brain_lesion/Task501_HIE","data/train/brain_lesion/Task504_ATLAS","data/train/brain_lesion/Task503_INRIA","data/train/brain_lesion/Task505_ISLES","data/train/brain_lesion/Task506_NWMH","data/train/brain_lesion/Task507_JHU"]
+
+#small sample training
+# img_datas = ["data/train/brain_lesion/Task502_BCHUNC","data/train/brain_lesion/Task501_HIE"]
+# img_datas=["data/train/brain_lesion/Task507_JHU"]
+# all_datasets=["Task502_BCHUNC","HIE_smalldiffuse","Task503_INRIA","Task504_ATLAS","Task505_ISLES","Task506_NWMH","Task507_JHU"]
+all_datasets=["Task502_BCHUNC","HIE_smalldiffuse","Task503_INRIA","Task505_ISLES","Task504_ATLAS","Task506_NWMH","Task507_JHU"]
 
 all_classes = [
 'COVID_lesion',
