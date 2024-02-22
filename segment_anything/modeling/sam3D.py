@@ -55,6 +55,8 @@ class Sam3D(nn.Module):
         self,
         batched_input: List[Dict[str, Any]],
         multimask_output: bool,
+        hq_token_only: bool = False,  # Added flag for HQ mask output
+
     ) -> List[Dict[str, torch.Tensor]]:
         """
         Predicts masks end-to-end from provided images and prompts.
