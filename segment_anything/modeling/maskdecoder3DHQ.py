@@ -360,31 +360,18 @@ def forward(
     sparse_prompt_embeddings: torch.Tensor,
     dense_prompt_embeddings: torch.Tensor,
     multimask_output: bool,
-    hq_token_only: bool = False,  # Added for SAMHQ, indicates if only HQ masks should be returned
-    interm_embeddings: torch.Tensor = None,  # Added for SAMHQ, to pass intermediate features for HQ processing
+    hq_token_only: bool = False,  # Indicates if only HQ masks should be returned
+    interm_embeddings: torch.Tensor = None,  # Intermediate features for HQ processing
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Predict masks given image and prompt embeddings, adapted for 3DSAMHQ.
-
-    Arguments:
-      image_embeddings (torch.Tensor): the embeddings from the image encoder
-      image_pe (torch.Tensor): positional encoding with the shape of image_embeddings
-      sparse_prompt_embeddings (torch.Tensor): the embeddings of the points and boxes
-      dense_prompt_embeddings (torch.Tensor): the embeddings of the mask inputs
-      multimask_output (bool): Whether to return multiple masks or a single mask.
-      hq_token_only (bool): For SAMHQ, whether to return only HQ masks.
-      interm_embeddings (torch.Tensor): For SAMHQ, intermediate features for HQ processing.
-
-    Returns:
-      torch.Tensor: batched predicted masks
-      torch.Tensor: batched predictions of mask quality
     """
     # Process HQ features if available and required
+    hq_features = None
     if interm_embeddings is not None:
-        vit_features = interm_embeddings.permute(0, 4, 1, 2, 3)  # Adjust dimensions as necessary
+        # Adjust the dimensionality as per your model's requirement
+        vit_features = interm_embeddings.permute(0, 4, 1, 2, 3)
         hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(vit_features)
-    else:
-        hq_features = None
 
     masks, iou_pred = self.predict_masks(
         image_embeddings=image_embeddings,
@@ -396,18 +383,21 @@ def forward(
 
     # Adjustments for selecting mask outputs based on HQ features and multimask_output
     if multimask_output:
-        mask_slice = slice(1, None)
+        mask_slice = slice(1, self.num_mask_tokens-1)  # Adjust slice to exclude HQ token for multi-mask output
     else:
-        mask_slice = slice(0, 1)
+        mask_slice = slice(0, 1)  # Default to the first mask token for single mask output
+
     masks = masks[:, mask_slice, :, :, :]
 
+    # Special handling for HQ token output
     if hq_features is not None and hq_token_only:
-        # If only HQ masks are requested, adjust the slicing accordingly
-        masks = masks[:, -1:, :, :, :]  # Assuming the last token is the HQ token
+        # Assuming the last token is the HQ token
+        masks = masks[:, -1:, :, :, :]  # Select only the HQ mask
 
     iou_pred = iou_pred[:, mask_slice]
 
     return masks, iou_pred
+
 
 # Lightly adapted from
 # https://github.com/facebookresearch/MaskFormer/blob/main/mask_former/modeling/transformer/transformer_predictor.py # noqa
