@@ -286,7 +286,7 @@ class LayerNorm3d(nn.Module):
 
 # Assuming LayerNorm3d and other necessary 3D operation classes are defined elsewhere
 
-class MaskDecoder3D(nn.Module):
+class MaskDecoder3DHQ(nn.Module):
     def __init__(
         self,
         *,
