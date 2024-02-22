@@ -68,7 +68,7 @@ MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
 os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
 
 def build_model(args):
-    sam_model = sam_model_registry3D[args.model_type](checkpoint=None).to(device)
+    sam_model = sam_model_registry3D_hq[args.model_type](checkpoint=None).to(device)
     if args.multi_gpu:
         sam_model = DDP(sam_model, device_ids=[args.rank], output_device=args.rank)
     return sam_model
