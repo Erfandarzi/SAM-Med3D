@@ -240,7 +240,9 @@ class BaseTrainer:
             else:
                 low_res_masks, prev_masks = self.batch_forward(sam_model, image_embedding, gt3D, low_res_masks, points=[points_input, labels_input])
             loss = self.seg_loss(prev_masks, gt3D)
-            return_loss += loss
+            hq_mask_loss = self.compute_hq_mask_loss(prev_masks, gt3D)
+            total_loss = loss + hq_mask_loss
+            return_loss += total_loss.item()
         return prev_masks, return_loss
     
     def get_dice_score(self, prev_masks, gt3D):
