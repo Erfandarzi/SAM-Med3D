@@ -63,7 +63,7 @@ sam_model_registry3D_hq = {
 
 
 
-def _build_sam3D(
+def _build_sam3D_hq(
     encoder_embed_dim,
     encoder_depth,
     encoder_num_heads,
@@ -115,7 +115,7 @@ def _build_sam3D(
     return sam
 
 
-def _build_sam3D_ori(
+def _build_sam3D_hq_ori(
     encoder_embed_dim,
     encoder_depth,
     encoder_num_heads,
