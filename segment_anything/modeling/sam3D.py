@@ -135,7 +135,7 @@ class Sam3D(nn.Module):
                     "low_res_logits": low_res_masks,
                 }
             )
-        return outputs
+        return outputs, interm_embeddings
 
     def postprocess_masks(
         self,
