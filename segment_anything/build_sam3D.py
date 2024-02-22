@@ -75,6 +75,7 @@ def _build_sam3D(
     image_size = 256
     vit_patch_size = 16
     image_embedding_size = image_size // vit_patch_size
+    interim_embeddings=None
     sam = Sam3D(
         image_encoder=ImageEncoderViT3D(
             depth=encoder_depth,
@@ -96,11 +97,12 @@ def _build_sam3D(
             input_image_size=(image_size, image_size, image_size),
             mask_in_chans=16,
         ),
-        mask_decoder=MaskDecoder3DHQ(
+       mask_decoder=MaskDecoder3DHQ(
             num_multimask_outputs=3,
             transformer_dim=prompt_embed_dim,
             iou_head_depth=3,
             iou_head_hidden_dim=256,
+            vit_dim=1024
         ),
         pixel_mean=[123.675, 116.28, 103.53],
         pixel_std=[58.395, 57.12, 57.375],
