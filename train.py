@@ -14,6 +14,8 @@ import torch.nn.functional as F
 import torchio as tio
 from torch.utils.data.distributed import DistributedSampler
 from segment_anything.build_sam3D import sam_model_registry3D
+from segment_anything.build_sam3DHQ import sam_model_registry3D_hq
+
 import argparse
 from torch.cuda import amp
 import torch.multiprocessing as mp
