@@ -69,6 +69,7 @@ def _build_sam3D(
     encoder_num_heads,
     encoder_global_attn_indexes,
     checkpoint=None,
+    hq_token_only=False
 ):
     prompt_embed_dim = 384
     image_size = 256
@@ -95,7 +96,7 @@ def _build_sam3D(
             input_image_size=(image_size, image_size, image_size),
             mask_in_chans=16,
         ),
-        mask_decoder=MaskDecoder3D(
+        mask_decoder=MaskDecoder3DHQ(
             num_multimask_outputs=3,
             transformer_dim=prompt_embed_dim,
             iou_head_depth=3,
@@ -144,7 +145,7 @@ def _build_sam3D_ori(
             input_image_size=(image_size, image_size, image_size),
             mask_in_chans=16,
         ),
-        mask_decoder=MaskDecoder3D(
+        mask_decoder=MaskDecoder3DHQ(
             num_multimask_outputs=3,
             transformer_dim=prompt_embed_dim,
             iou_head_depth=3,
