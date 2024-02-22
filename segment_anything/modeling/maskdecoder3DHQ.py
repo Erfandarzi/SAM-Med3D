@@ -353,50 +353,50 @@ class MaskDecoder3DHQ(nn.Module):
             [MLPBlock3D(transformer_dim, transformer_dim, transformer_dim // 8, 3) for i in range(self.num_mask_tokens)]
         )
         self.iou_prediction_head = MLPBlock3D(transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth)
-def forward(
-    self,
-    image_embeddings: torch.Tensor,
-    image_pe: torch.Tensor,
-    sparse_prompt_embeddings: torch.Tensor,
-    dense_prompt_embeddings: torch.Tensor,
-    multimask_output: bool,
-    hq_token_only: bool = False,  # Indicates if only HQ masks should be returned
-    interm_embeddings: torch.Tensor = None,  # Intermediate features for HQ processing
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Predict masks given image and prompt embeddings, adapted for 3DSAMHQ.
-    """
-    # Process HQ features if available and required
-    hq_features = None
-    if interm_embeddings is not None:
-        # Adjust the dimensionality as per your model's requirement
-        vit_features = interm_embeddings.permute(0, 4, 1, 2, 3)
-        hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(vit_features)
-
-    masks, iou_pred = self.predict_masks(
-        image_embeddings=image_embeddings,
-        image_pe=image_pe,
-        sparse_prompt_embeddings=sparse_prompt_embeddings,
-        dense_prompt_embeddings=dense_prompt_embeddings,
-        hq_features=hq_features,  # Pass HQ features for mask prediction
-    )
-
-    # Adjustments for selecting mask outputs based on HQ features and multimask_output
-    if multimask_output:
-        mask_slice = slice(1, self.num_mask_tokens-1)  # Adjust slice to exclude HQ token for multi-mask output
-    else:
-        mask_slice = slice(0, 1)  # Default to the first mask token for single mask output
-
-    masks = masks[:, mask_slice, :, :, :]
-
-    # Special handling for HQ token output
-    if hq_features is not None and hq_token_only:
-        # Assuming the last token is the HQ token
-        masks = masks[:, -1:, :, :, :]  # Select only the HQ mask
-
-    iou_pred = iou_pred[:, mask_slice]
-
-    return masks, iou_pred
+    def forward(
+        self,
+        image_embeddings: torch.Tensor,
+        image_pe: torch.Tensor,
+        sparse_prompt_embeddings: torch.Tensor,
+        dense_prompt_embeddings: torch.Tensor,
+        multimask_output: bool,
+        hq_token_only: bool = False,  # Indicates if only HQ masks should be returned
+        interm_embeddings: torch.Tensor = None,  # Intermediate features for HQ processing
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Predict masks given image and prompt embeddings, adapted for 3DSAMHQ.
+        """
+        # Process HQ features if available and required
+        hq_features = None
+        if interm_embeddings is not None:
+            # Adjust the dimensionality as per your model's requirement
+            vit_features = interm_embeddings.permute(0, 4, 1, 2, 3)
+            hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(vit_features)
+    
+        masks, iou_pred = self.predict_masks(
+            image_embeddings=image_embeddings,
+            image_pe=image_pe,
+            sparse_prompt_embeddings=sparse_prompt_embeddings,
+            dense_prompt_embeddings=dense_prompt_embeddings,
+            hq_features=hq_features,  # Pass HQ features for mask prediction
+        )
+    
+        # Adjustments for selecting mask outputs based on HQ features and multimask_output
+        if multimask_output:
+            mask_slice = slice(1, self.num_mask_tokens-1)  # Adjust slice to exclude HQ token for multi-mask output
+        else:
+            mask_slice = slice(0, 1)  # Default to the first mask token for single mask output
+    
+        masks = masks[:, mask_slice, :, :, :]
+    
+        # Special handling for HQ token output
+        if hq_features is not None and hq_token_only:
+            # Assuming the last token is the HQ token
+            masks = masks[:, -1:, :, :, :]  # Select only the HQ mask
+    
+        iou_pred = iou_pred[:, mask_slice]
+    
+        return masks, iou_pred
 
 
 # Lightly adapted from
