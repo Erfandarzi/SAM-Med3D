@@ -226,6 +226,40 @@ class BaseTrainer:
             points_input = points_co
             labels_input = points_la
         return points_input, labels_input
+    def dice_loss(self,pred, target, smooth=1.):
+        pred = pred.contiguous()
+        target = target.contiguous()    
+    
+        intersection = (pred * target).sum(dim=2).sum(dim=2)
+        
+        loss = (1 - ((2. * intersection + smooth) / (pred.sum(dim=2).sum(dim=2) + target.sum(dim=2).sum(dim=2) + smooth)))
+        
+        return loss.mean()
+
+
+    def compute_hq_mask_loss(self,pred_masks, gt_masks,loss_weight=0.1):
+        """
+        Compute the loss for high-quality 3D masks.
+        Args:
+            pred_masks (torch.Tensor): Predicted masks, shape (B, 1, D, H, W)
+            gt_masks (torch.Tensor): Ground truth masks, shape (B, D, H, W)
+        Returns:
+            torch.Tensor: The computed loss value.
+        """
+        # Ensure gt_masks is a float tensor with the same dimensions as pred_masks
+        gt_masks = gt_masks.unsqueeze(1).float()
+        
+        # Binary Cross-Entropy Loss
+        bce_loss = F.binary_cross_entropy_with_logits(pred_masks, gt_masks, reduction='mean')
+        
+        # Dice Loss
+        pred_masks_sigmoid = torch.sigmoid(pred_masks)
+        dice_loss_val = dice_loss(pred_masks_sigmoid, gt_masks)
+        
+        # Combine losses
+        total_loss = loss_weight*(bce_loss + dice_loss_val)
+        
+        return total_loss
 
     def interaction(self, sam_model, image_embedding, gt3D, num_clicks):
         return_loss = 0
