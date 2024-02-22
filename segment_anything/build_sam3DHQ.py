@@ -10,7 +10,7 @@ from functools import partial
 
 from .modeling import ImageEncoderViT3D, MaskDecoder3DHQ, PromptEncoder3D, Sam3D
 
-def build_sam3D_vit_h(checkpoint=None):
+def build_sam3D_hq_vit_h(checkpoint=None):
     return _build_sam3D(
         encoder_embed_dim=1280,
         encoder_depth=32,
@@ -20,10 +20,10 @@ def build_sam3D_vit_h(checkpoint=None):
     )
 
 
-build_sam3D = build_sam3D_vit_h
+build_sam3D_hq = build_sam3D_hq_vit_h
 
 
-def build_sam3D_vit_l(checkpoint=None):
+def build_sam3D_hq_vit_l(checkpoint=None):
     return _build_sam3D(
         encoder_embed_dim=1024,
         encoder_depth=24,
@@ -33,7 +33,7 @@ def build_sam3D_vit_l(checkpoint=None):
     )
 
 
-def build_sam3D_vit_b(checkpoint=None):
+def build_sam3D_hq_vit_b(checkpoint=None):
     return _build_sam3D(
         # encoder_embed_dim=768,
         encoder_embed_dim=384,
@@ -43,8 +43,8 @@ def build_sam3D_vit_b(checkpoint=None):
         checkpoint=checkpoint,
     )
 
-def build_sam3D_vit_b_ori(checkpoint=None):
-    return _build_sam3D_ori(
+def build_sam3D_hq_vit_b_ori(checkpoint=None):
+    return _build_sam3D_hq_ori(
         encoder_embed_dim=768,
         encoder_depth=12,
         encoder_num_heads=12,
@@ -53,12 +53,12 @@ def build_sam3D_vit_b_ori(checkpoint=None):
     )
 
 
-sam_model_registry3D = {
-    "default": build_sam3D_vit_h,
-    "vit_h": build_sam3D_vit_h,
-    "vit_l": build_sam3D_vit_l,
-    "vit_b": build_sam3D_vit_b,
-    "vit_b_ori": build_sam3D_vit_b_ori,
+sam_model_registry3D_hq = {
+    "default": build_sam3D_hq_vit_h,
+    "vit_h": build_sam3D_hq_vit_h,
+    "vit_l": build_sam3D_hq_vit_l,
+    "vit_b": build_sam3D_hq_vit_b,
+    "vit_b_ori": build_sam3D_hq_vit_b_ori,
 }
 
 
@@ -157,8 +157,14 @@ def _build_sam3D_ori(
         pixel_std=[58.395, 57.12, 57.375],
     )
     sam.eval()
+    # Load checkpoint if provided
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
-        sam.load_state_dict(state_dict)
+        sam.load_state_dict(state_dict, strict=False)  # Use strict=False to ignore non-matching keys
+
+    # Freeze parameters except for those related to HQ features
+    for name, param in sam.named_parameters():
+        if not any(n in name for n in ['hf_token', 'hf_mlp', 'compress_vit_feat', 'embedding_encoder', 'embedding_maskfeature']):
+            param.requires_grad = False
     return sam
