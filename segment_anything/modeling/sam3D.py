@@ -119,8 +119,7 @@ class Sam3D(nn.Module):
                 sparse_prompt_embeddings=sparse_embeddings,
                 dense_prompt_embeddings=dense_embeddings,
                 multimask_output=multimask_output,
-                hq_token_only=hq_token_only,
-                hq
+                hq_token_only=hq_token_only
             )
             masks = self.postprocess_masks(
                 low_res_masks,
