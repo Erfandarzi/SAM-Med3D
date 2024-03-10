@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from typing import Optional, Tuple, Type
+from typing import Optional, Tuple, Type, List
 
 
 class MLPBlock(nn.Module):
@@ -133,22 +133,25 @@ class ImageEncoderViT3D(nn.Module):
             # nn.LayerNorm(out_chans),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # input_size = [1,1,256,256,256]
-        # import IPython; IPython.embed()
-        x = self.patch_embed(x)
-        # x = [1,16,16,16,768]
-        # import pdb; pdb.set_trace()
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        x = self.patch_embed(x)  # Apply initial patch embedding
         if self.pos_embed is not None:
-            x = x + self.pos_embed
+            x = x + self.pos_embed  # Add position embedding if exists
 
+        interm_embeddings = []  # Initialize a list to hold intermediate embeddings
         for blk in self.blocks:
-            x = blk(x)
-        # x = [1,16,16,16,768]
-        x = self.neck(x.permute(0, 4, 1, 2, 3))
+            x = blk(x)  # Process input through each block
+            # Optionally capture intermediate embeddings. For example, you might want to capture:
+            # - After specific blocks
+            # - After blocks with specific characteristics (e.g., a certain type of layer or configuration)
+            # Here, as an example, we're capturing after every block, but you might want to use a condition
+            interm_embeddings.append(x.clone())  # Clone to ensure it's not modified by subsequent layers
 
-        # output_size = [1,256,16,16,16]
-        return x
+        x = self.neck(x.permute(0, 4, 1, 2, 3))  # Process through the neck, adjust dimensions as needed
+        # Adjust the permute for 5D tensor: [batch size, channels, depth, height, width]
+        vit_features = interm_embeddings[0].permute(0, 1, 2, 3, 4)
+
+        return x, interm_embeddings
 
 
 class Block3D(nn.Module):
