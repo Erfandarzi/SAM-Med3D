@@ -28,20 +28,24 @@ from typing import Tuple, Type
 
 
 class MLPBlock3D(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        mlp_dim: int,
-        act: Type[nn.Module] = nn.GELU,
-    ) -> None:
-        super().__init__()
-        self.lin1 = nn.Linear(embedding_dim, mlp_dim)
-        self.lin2 = nn.Linear(mlp_dim, embedding_dim)
-        self.act = act()
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, sigmoid_output=False):
+        super(MLPBlock3D, self).__init__()
+        self.num_layers = num_layers
+        layers = [nn.Linear(input_dim, hidden_dim)]
+        layers += [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 2)]
+        layers += [nn.Linear(hidden_dim, output_dim)]
+        
+        self.layers = nn.ModuleList(layers)
+        self.sigmoid_output = sigmoid_output
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.lin2(self.act(self.lin1(x)))
-
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i < self.num_layers - 1:
+                x = F.relu(x)
+            elif self.sigmoid_output:
+                x = torch.sigmoid(x)
+        return x
 class TwoWayTransformer3D(nn.Module):
     def __init__(
         self,
@@ -166,10 +170,8 @@ class TwoWayAttentionBlock3D(nn.Module):
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
         self.norm2 = nn.LayerNorm(embedding_dim)
-
-        self.mlp = MLPBlock3D(embedding_dim, mlp_dim, activation)
+        self.mlp = MLPBlock3D(input_dim=embedding_dim, hidden_dim=mlp_dim, output_dim=embedding_dim, num_layers=3, sigmoid_output=False)
         self.norm3 = nn.LayerNorm(embedding_dim)
-
         self.norm4 = nn.LayerNorm(embedding_dim)
         self.cross_attn_image_to_token = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
@@ -295,7 +297,7 @@ class MaskDecoder3DHQ(nn.Module):
         activation: Type[nn.Module] = nn.GELU,
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
-        vit_dim: int = 1024,  # Added for SAMHQ
+        vit_dim: int = 768,  # Added for SAMHQ
     ) -> None:
         super().__init__()
         self.transformer_dim = transformer_dim
@@ -326,6 +328,8 @@ class MaskDecoder3DHQ(nn.Module):
             nn.ConvTranspose3d(transformer_dim, transformer_dim // 8, kernel_size=2, stride=2)
         )
 
+
+
         # Embedding encoder and mask feature layers adapted for 3D
         self.embedding_encoder = nn.Sequential(
             nn.ConvTranspose3d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
@@ -354,49 +358,121 @@ class MaskDecoder3DHQ(nn.Module):
         )
         self.iou_prediction_head = MLPBlock3D(transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth)
     def forward(
+            self,
+            image_embeddings: torch.Tensor,
+            image_pe: torch.Tensor,
+            sparse_prompt_embeddings: torch.Tensor,
+            dense_prompt_embeddings: torch.Tensor,
+            multimask_output: bool,
+            hq_token_only: bool = False,  # Indicates if only HQ masks should be returned
+            interm_embeddings: torch.Tensor = None,  # Intermediate features for HQ processing
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+            """
+            Predict masks given image and prompt embeddings, adapted for 3DSAMHQ.
+            """
+            hq_features = None
+            # if interm_embeddings is None:
+            #    raise ValueError("interm_embeddings are missing")
+            if interm_embeddings is  None:
+
+                print("There's no interm embeddings!")
+
+            # Adjust the dimensionality as per your model's requirement
+            if interm_embeddings is not None:
+                # Process interm_embeddings to generate hq_features
+                
+                vit_features = interm_embeddings[0].permute(0,4, 1, 2,3)  
+                vit_features = self.compress_vit_feat(vit_features)
+                hq_features = self.embedding_encoder(image_embeddings) + vit_features
+
+            # Ensure hq_features were generated or handled correctly
+            if hq_features is None:
+                raise ValueError("hq_features are required but were not generated.")
+
+            masks, iou_pred = self.predict_masks(
+                image_embeddings=image_embeddings,
+                image_pe=image_pe,
+                sparse_prompt_embeddings=sparse_prompt_embeddings,
+                dense_prompt_embeddings=dense_prompt_embeddings,
+                hq_features=hq_features,  # Pass HQ features for mask prediction
+            )
+        
+            # Adjustments for selecting mask outputs based on HQ features and multimask_output
+            if multimask_output:
+                mask_slice = slice(1, self.num_mask_tokens-1)  # Adjust slice to exclude HQ token for multi-mask output
+            else:
+                mask_slice = slice(0, 1)  # Default to the first mask token for single mask output
+        
+            masks = masks[:, mask_slice, :, :, :]
+        
+            # Special handling for HQ token output
+            if hq_features is not None and hq_token_only:
+                # Assuming the last token is the HQ token
+                masks = masks[:, -1:, :, :, :]  # Select only the HQ mask
+        
+            iou_pred = iou_pred[:, mask_slice]
+        
+            return masks, iou_pred
+
+    def predict_masks(
         self,
         image_embeddings: torch.Tensor,
         image_pe: torch.Tensor,
         sparse_prompt_embeddings: torch.Tensor,
         dense_prompt_embeddings: torch.Tensor,
-        multimask_output: bool,
-        hq_token_only: bool = False,  # Indicates if only HQ masks should be returned
-        interm_embeddings: torch.Tensor = None,  # Intermediate features for HQ processing
+        hq_features: torch.Tensor,  # Add this parameter
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Predict masks given image and prompt embeddings, adapted for 3DSAMHQ.
-        """
-        # Process HQ features if available and required
-        hq_features = None
-        if interm_embeddings is not None:
-            # Adjust the dimensionality as per your model's requirement
-            vit_features = interm_embeddings.permute(0, 4, 1, 2, 3)
-            hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(vit_features)
-    
-        masks, iou_pred = self.predict_masks(
-            image_embeddings=image_embeddings,
-            image_pe=image_pe,
-            sparse_prompt_embeddings=sparse_prompt_embeddings,
-            dense_prompt_embeddings=dense_prompt_embeddings,
-            hq_features=hq_features,  # Pass HQ features for mask prediction
-        )
-    
-        # Adjustments for selecting mask outputs based on HQ features and multimask_output
-        if multimask_output:
-            mask_slice = slice(1, self.num_mask_tokens-1)  # Adjust slice to exclude HQ token for multi-mask output
-        else:
-            mask_slice = slice(0, 1)  # Default to the first mask token for single mask output
-    
-        masks = masks[:, mask_slice, :, :, :]
-    
-        # Special handling for HQ token output
-        if hq_features is not None and hq_token_only:
-            # Assuming the last token is the HQ token
-            masks = masks[:, -1:, :, :, :]  # Select only the HQ mask
-    
-        iou_pred = iou_pred[:, mask_slice]
-    
+        """Predicts masks including the use of high-quality (HQ) features."""
+        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight, self.hf_token.weight], dim=0)
+        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
+        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
+
+        src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0) + dense_prompt_embeddings
+        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
+        b, c, x, y, z = src.shape
+
+        hs, src = self.transformer(src, pos_src, tokens)
+        iou_token_out, mask_tokens_out = hs[:, 0, :], hs[:, 1:(1 + self.num_mask_tokens), :]
+
+        hq_features_processed = self.embedding_encoder(image_embeddings) + hq_features.repeat(b,1,1,1,1)
+
+        src = src.transpose(1, 2).view(b, c, x, y, z)
+        upscaled_embedding = self.output_upscaling(src)
+        upscaled_embedding_hq = self.embedding_maskfeature(upscaled_embedding) + hq_features_processed
+
+        # Generate masks from tokens
+        masks = self.generate_masks(mask_tokens_out, upscaled_embedding, upscaled_embedding_hq,src,b,c,x,y,z)
+
+        # Generate mask quality predictions
+        iou_pred = self.iou_prediction_head(iou_token_out)
+
         return masks, iou_pred
+
+
+    def generate_masks(self, mask_tokens_out, upscaled_embedding, upscaled_embedding_hq,src,b,c,x,y,z):
+        """Generate standard and HQ masks, then combine them."""
+        hyper_in_list = [self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]) for i in range(self.num_mask_tokens - 1)]
+        hyper_in_list.append(self.hf_mlp(mask_tokens_out[:, -1, :]))  # Process HQ token separately
+        hyper_in = torch.stack(hyper_in_list, dim=1)
+
+        
+        upscaled_embedding_reshaped = upscaled_embedding.view(upscaled_embedding.shape[0], upscaled_embedding.shape[1], -1)
+        upscaled_embedding_hq_reshaped = upscaled_embedding_hq.view(upscaled_embedding_hq.shape[0], upscaled_embedding_hq.shape[1], -1)
+
+        
+        masks_standard = torch.matmul(hyper_in[:, :-1], upscaled_embedding_reshaped)
+        masks_hq = torch.matmul(hyper_in[:, -1:], upscaled_embedding_hq_reshaped)
+
+        # Reshape back to original spatial dimensions for masks
+        masks_standard = masks_standard.view(upscaled_embedding.shape[0], -1, *upscaled_embedding.shape[2:])
+        masks_hq = masks_hq.view(upscaled_embedding_hq.shape[0], -1, *upscaled_embedding_hq.shape[2:])
+
+        # Combine standard and HQ masks for final output
+        masks_combined = torch.cat([masks_standard, masks_hq], dim=1)
+
+        return masks_combined
+
+
 
 
 # Lightly adapted from
