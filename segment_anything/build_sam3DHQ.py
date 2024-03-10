@@ -5,11 +5,40 @@
 # LICENSE file in the root directory of this source tree.
 
 import torch
+import torch.nn as nn
+import torch.nn.init as init
+
 
 from functools import partial
 
 from .modeling import ImageEncoderViT3D, MaskDecoder3DHQ, PromptEncoder3D, Sam3D
 
+def init_weights(m):
+    if isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d) or isinstance(m, nn.Linear):
+        init.xavier_uniform_(m.weight.data, gain=nn.init.calculate_gain('relu'))
+        if m.bias is not None:
+            init.constant_(m.bias.data, 0)
+
+def custom_initialization(model):
+    """Applies custom initialization to uninitialized layers of the model."""
+    # This function can be extended to apply different initializations based on layer types.
+    model.apply(init_weights)
+
+def initialize_missing_components(model, state_dict):
+    """Initialize missing components in the model not covered by the state dict."""
+    model_state_dict = model.state_dict()
+
+    # Identify missing and unexpected keys
+    missing_keys = [key for key in model_state_dict.keys() if key not in state_dict]
+    unexpected_keys = [key for key in state_dict.keys() if key not in model_state_dict]
+
+    # Report missing and unexpected keys (optional)
+    print(f"Missing keys in state dict: {missing_keys}")
+    print(f"Unexpected keys in state dict: {unexpected_keys}")
+
+    # Apply custom initialization to the whole model, it won't re-initialize loaded weights
+    custom_initialization(model)
+    
 def build_sam3D_hq_vit_h(checkpoint=None):
     return _build_sam3D(
         encoder_embed_dim=1280,
@@ -75,7 +104,7 @@ def _build_sam3D_hq(
     image_size = 256
     vit_patch_size = 16
     image_embedding_size = image_size // vit_patch_size
-    interim_embeddings=None
+    interm_embeddings=None
     sam = Sam3D(
         image_encoder=ImageEncoderViT3D(
             depth=encoder_depth,
@@ -156,14 +185,23 @@ def _build_sam3D_hq_ori(
         pixel_mean=[123.675, 116.28, 103.53],
         pixel_std=[58.395, 57.12, 57.375],
     )
+    sam.mask_decoder.hf_token.apply(init_weights)
+    sam.mask_decoder.hf_mlp.apply(init_weights)
+    sam.mask_decoder.compress_vit_feat.apply(init_weights)
+    sam.mask_decoder.embedding_encoder.apply(init_weights)
+    sam.mask_decoder.embedding_maskfeature.apply(init_weights)
     sam.eval()
     # Load checkpoint if provided
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f)
-        sam.load_state_dict(state_dict, strict=False)  # Use strict=False to ignore non-matching keys
+        # Using strict=False allows ignoring unmatched keys, facilitating the addition of new components
+        sam.load_state_dict(state_dict, strict=False)
+        initialize_missing_components(model, checkpoint['model_state_dict'])
 
-    # Freeze parameters except for those related to HQ features
+
+
+    # Freeze selected parameters
     for name, param in sam.named_parameters():
         if not any(n in name for n in ['hf_token', 'hf_mlp', 'compress_vit_feat', 'embedding_encoder', 'embedding_maskfeature']):
             param.requires_grad = False
