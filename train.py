@@ -31,7 +31,7 @@ parser.add_argument('--task_name', type=str, default='union_train')
 parser.add_argument('--click_type', type=str, default='random')
 parser.add_argument('--multi_click', action='store_true', default=False)
 parser.add_argument('--model_type', type=str, default='vit_b_ori')
-parser.add_argument('--checkpoint', type=str, default='./work_dir/SAM/sam_vit_b.pth')
+parser.add_argument('--checkpoint', type=str, default='./ckpt/sam_med3d.pth')
 parser.add_argument('--device', type=str, default='cuda')
 parser.add_argument('--work_dir', type=str, default='./work_dir')
 
@@ -75,10 +75,40 @@ def build_model(args):
 def get_dataloaders(args):
     train_dataset = Dataset_Union_ALL(paths=img_datas, transform=tio.Compose([
         tio.ToCanonical(),
-        tio.CropOrPad(mask_name='label', target_shape=(args.img_size,args.img_size,args.img_size)), # crop only object region
+        tio.CropOrPad(mask_name='label', target_shape=(args.img_size,args.img_size,args.img_size)),
         tio.RandomFlip(axes=(0, 1, 2)),
     ]),
-    threshold=1000)
+    threshold=70)
+
+    # Add these checks
+    for i in range(min(10, len(train_dataset))):
+        sample = train_dataset[i]
+        # print(f"Sample {i} type: {type(sample)}")
+        if isinstance(sample, tuple):
+            # print(f"  Tuple length: {len(sample)}")
+            pass
+            for j, item in enumerate(sample):
+                # print(f"    Item {j} type: {type(item)}, shape: {item.shape if hasattr(item, 'shape') else 'N/A'}")
+                pass
+        elif isinstance(sample, dict):
+            pass
+            # print(f"  Dict keys: {sample.keys()}")
+            for key, value in sample.items():
+                pass
+                # print(f"    {key} type: {type(value)}, shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
+        else:
+            pass
+            # print(f"  Unexpected type: {type(sample)}")
+        
+        # Assuming the first element is the image and the second is the label
+        image = sample[0] if isinstance(sample, tuple) else sample['image']
+        label = sample[1] if isinstance(sample, tuple) else sample['label']
+        
+        # print(f"  Image stats: min={image.min().item():.3f}, max={image.max().item():.3f}, mean={image.mean().item():.3f}")
+        # print(f"  Label stats: min={label.min().item():.3f}, max={label.max().item():.3f}, mean={label.mean().item():.3f}")
+        
+        if torch.isnan(image).any() or torch.isinf(image).any():
+            print(f"  WARNING: NaN or Inf values found in image {i}")
 
     if args.multi_gpu:
         train_sampler = DistributedSampler(train_dataset)
@@ -113,7 +143,7 @@ class BaseTrainer:
         self.set_loss_fn()
         self.set_optimizer()
         self.set_lr_scheduler()
-        self.init_checkpoint(join(self.args.work_dir, self.args.task_name, 'sam_model_latest.pth'))
+        self.init_checkpoint(join(self.args.work_dir, self.args.task_name, './ckpt/sam_med3d.pth'))
         self.norm_transform = tio.ZNormalization(masking_method=lambda x: x > 0)
         
     def set_loss_fn(self):
@@ -202,7 +232,11 @@ class BaseTrainer:
             dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
             multimask_output=False,
         )
+        # print(f"low_res_masks from decoder: min={low_res_masks.min().item()}, max={low_res_masks.max().item()}, mean={low_res_masks.mean().item()}")
+
         prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode='trilinear', align_corners=False)
+        # print(f"prev_masks after interpolation: min={prev_masks.min().item()}, max={prev_masks.max().item()}, mean={prev_masks.mean().item()}")
+
         return low_res_masks, prev_masks
 
     def get_points(self, prev_masks, gt3D):
@@ -231,6 +265,8 @@ class BaseTrainer:
         low_res_masks = F.interpolate(prev_masks.float(), size=(args.img_size//4,args.img_size//4,args.img_size//4))
         random_insert = np.random.randint(2, 9)
         for num_click in range(num_clicks):
+            # print(f"Click {num_click + 1}/{num_clicks}")
+
             points_input, labels_input = self.get_points(prev_masks, gt3D)
 
             if num_click == random_insert or num_click == num_clicks - 1:
@@ -239,33 +275,53 @@ class BaseTrainer:
                 low_res_masks, prev_masks = self.batch_forward(sam_model, image_embedding, gt3D, low_res_masks, points=[points_input, labels_input])
             loss = self.seg_loss(prev_masks, gt3D)
             return_loss += loss
+            # print(f"Click {num_click + 1} loss: {loss.item()}")
+
+
+
+
         return prev_masks, return_loss
     
     def get_dice_score(self, prev_masks, gt3D):
         def compute_dice(mask_pred, mask_gt):
-            mask_threshold = 0.5
+            intersection = (mask_pred & mask_gt).sum().float()
+            union = mask_pred.sum() + mask_gt.sum()
+            if union == 0:
+                return 0.0
+            return (2.0 * intersection / union).item()
 
-            mask_pred = (mask_pred > mask_threshold)
-            mask_gt = (mask_gt > 0)
-            
-            volume_sum = mask_gt.sum() + mask_pred.sum()
-            if volume_sum == 0:
-                return np.NaN
-            volume_intersect = (mask_gt & mask_pred).sum()
-            return 2*volume_intersect / volume_sum
-    
         pred_masks = (prev_masks > 0.5)
         true_masks = (gt3D > 0)
+        # print(f"pred_masks unique values: {torch.unique(pred_masks)}")
+        # print(f"true_masks unique values: {torch.unique(true_masks)}")
         dice_list = []
         for i in range(true_masks.shape[0]):
-            dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
-        return (sum(dice_list)/len(dice_list)).item() 
-
-
+            dice = compute_dice(pred_masks[i], true_masks[i])
+            print(f"Sample {i} dice: {dice}")
+            dice_list.append(dice)
+        avg_dice = sum(dice_list) / len(dice_list)
+        print(f"Average dice: {avg_dice}")
+        return avg_dice
+    def get_grad_norm(self):
+        total_norm = 0
+        for p in self.model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        return total_norm ** 0.5
+    def calculate_dice_score(self, pred_masks, gt_masks):
+        pred_masks = (pred_masks > 0.5).float()
+        gt_masks = (gt_masks > 0).float()
+        
+        intersection = (pred_masks * gt_masks).sum()
+        union = pred_masks.sum() + gt_masks.sum()
+        
+        dice = (2. * intersection + 1e-5) / (union + 1e-5)
+        return dice.item()
     def train_epoch(self, epoch, num_clicks):
         epoch_loss = 0
-        epoch_iou = 0
-        epoch_dice = 0
+        epoch_dice_sum = 0
+        epoch_sample_count = 0
         self.model.train()
         if self.args.multi_gpu:
             sam_model = self.model.module
@@ -280,34 +336,85 @@ class BaseTrainer:
 
         self.optimizer.zero_grad()
         step_loss = 0
-        for step, (image3D, gt3D) in enumerate(tbar):
+        for step, data in enumerate(tbar):
+            # Unpack data
+            if isinstance(data, (tuple, list)):
+                image3D, gt3D = data
+            elif isinstance(data, dict):
+                image3D, gt3D = data['image'], data['label']
+            else:
+                raise TypeError(f"Unexpected data type: {type(data)}")
+
+            # Check if the image dimensions are correct (allowing for variable batch size)
+            if len(image3D.shape) != 5 or image3D.shape[1:] != (1, 128, 128, 128):
+                print(f"Skipping batch at step {step} due to unexpected shape: {image3D.shape}")
+                torch.save({
+                    'image3D': image3D,
+                    'gt3D': gt3D,
+                    'step': step,
+                    'epoch': epoch
+                }, f'skipped_batch_epoch{epoch}_step{step}.pt')
+                continue
+
+            batch_size = image3D.shape[0]
 
             my_context = self.model.no_sync if self.args.rank != -1 and step % self.args.accumulation_steps != 0 else nullcontext
 
             with my_context():
+                try:
+                    image3D = self.norm_transform(image3D.squeeze(dim=1))  # (B, C, W, H, D)
+                    image3D = image3D.unsqueeze(dim=1)
+                    
+                    if torch.isnan(image3D).any() or torch.isinf(image3D).any():
+                        raise ValueError("NaN or Inf values found after normalization")
+                    
+                    image3D = image3D.to(device)
+                    gt3D = gt3D.to(device).type(torch.long)
+                    
+                    with amp.autocast():
+                        image_embedding = sam_model.image_encoder(image3D)
+                        if torch.isnan(image_embedding).any() or torch.isinf(image_embedding).any():
+                            raise ValueError("NaN or Inf values in image embedding")
+                        
+                        self.click_points = []
+                        self.click_labels = []
 
-                image3D = self.norm_transform(image3D.squeeze(dim=1)) # (N, C, W, H, D)
-                image3D = image3D.unsqueeze(dim=1)
-                
-                image3D = image3D.to(device)
-                gt3D = gt3D.to(device).type(torch.long)
-                with amp.autocast():
-                    image_embedding = sam_model.image_encoder(image3D)
+                        prev_masks, loss = self.interaction(sam_model, image_embedding, gt3D, num_clicks=num_clicks)                
 
-                    self.click_points = []
-                    self.click_labels = []
+                    epoch_loss += loss.item()
+                    cur_loss = loss.item()
+                    loss /= self.args.accumulation_steps
+                    
+                    self.scaler.scale(loss).backward()
 
-                    pred_list = []
+                    # Calculate dice score for each sample in the batch
+                    for i in range(batch_size):
+                        dice_score = self.calculate_dice_score(prev_masks[i:i+1], gt3D[i:i+1])
+                        epoch_dice_sum += dice_score
+                        epoch_sample_count += 1
 
-                    prev_masks, loss = self.interaction(sam_model, image_embedding, gt3D, num_clicks=11)                
+                        # Update best dice score
+                        if dice_score > self.step_best_dice:
+                            self.step_best_dice = dice_score
+                            if dice_score > 0.9:
+                                self.save_checkpoint(
+                                    epoch,
+                                    sam_model.state_dict(),
+                                    describe=f'{epoch}_step_dice:{dice_score:.4f}_best'
+                                )
 
-                epoch_loss += loss.item()
+                except ValueError as e:
+                    print(f"Error in step {step}, epoch {epoch}")
+                    print(f"Error message: {str(e)}")
+                    
+                    torch.save({
+                        'image3D': image3D,
+                        'gt3D': gt3D,
+                        'step': step,
+                        'epoch': epoch
+                    }, f'error_batch_epoch{epoch}_step{step}.pt')
 
-                cur_loss = loss.item()
-
-                loss /= self.args.accumulation_steps
-                
-                self.scaler.scale(loss).backward()    
+                    continue
 
             if step % self.args.accumulation_steps == 0 and step != 0:
                 self.scaler.step(self.optimizer)
@@ -316,31 +423,23 @@ class BaseTrainer:
 
                 print_loss = step_loss / self.args.accumulation_steps
                 step_loss = 0
-                print_dice = self.get_dice_score(prev_masks, gt3D)
+                
+                if not self.args.multi_gpu or (self.args.multi_gpu and self.args.rank == 0):
+                    print(f'Epoch: {epoch}, Step: {step}, Loss: {print_loss:.4f}, Best Dice: {self.step_best_dice:.4f}')
+                    
+                    if print_loss < self.step_best_loss:
+                        self.step_best_loss = print_loss
             else:
                 step_loss += cur_loss
 
-            if not self.args.multi_gpu or (self.args.multi_gpu and self.args.rank == 0):
-                if step % self.args.accumulation_steps == 0 and step != 0:
-                    print(f'Epoch: {epoch}, Step: {step}, Loss: {print_loss}, Dice: {print_dice}')
-                    if print_dice > self.step_best_dice:
-                        self.step_best_dice = print_dice
-                        if print_dice > 0.9:
-                            self.save_checkpoint(
-                                epoch,
-                                sam_model.state_dict(),
-                                describe=f'{epoch}_step_dice:{print_dice}_best'
-                            )
-                    if print_loss < self.step_best_loss:
-                        self.step_best_loss = print_loss
-            
-        epoch_loss /= step
+        epoch_loss /= (step + 1)
+        epoch_dice = epoch_dice_sum / epoch_sample_count if epoch_sample_count > 0 else 0
+        print(f"Epoch {epoch} completed. Average loss: {epoch_loss:.4f}, Average Dice: {epoch_dice:.4f}, Best Dice: {self.step_best_dice:.4f}")
 
-        return epoch_loss, epoch_iou, epoch_dice, pred_list
-
-    def eval_epoch(self, epoch, num_clicks):
-        return 0
-    
+        return epoch_loss, 0, epoch_dice, []
+        def eval_epoch(self, epoch, num_clicks):
+            return 0
+        
     def plot_result(self, plot_data, description, save_name):
         plt.plot(plot_data)
         plt.title(description)

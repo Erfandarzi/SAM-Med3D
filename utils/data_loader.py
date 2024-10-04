@@ -11,7 +11,7 @@ from prefetch_generator import BackgroundGenerator
 
 class Dataset_Union_ALL(Dataset): 
     def __init__(self, paths, mode='train', data_type='Tr', image_size=128, 
-                 transform=None, threshold=500,
+                 transform=None, threshold=100,
                  split_num=1, split_idx=0, pcc=False):
         self.paths = paths
         self.data_type = data_type
@@ -29,10 +29,14 @@ class Dataset_Union_ALL(Dataset):
         return len(self.label_paths)
 
     def __getitem__(self, index):
-
+        print(f"Loading sample {index}")
         sitk_image = sitk.ReadImage(self.image_paths[index])
         sitk_label = sitk.ReadImage(self.label_paths[index])
 
+        print(f"Image path: {self.image_paths[index]}")
+        print(f"Label path: {self.label_paths[index]}")
+        print(f"Image size: {sitk_image.GetSize()}")
+        print(f"Label size: {sitk_label.GetSize()}")
         if sitk_image.GetOrigin() != sitk_label.GetOrigin():
             sitk_image.SetOrigin(sitk_label.GetOrigin())
         if sitk_image.GetDirection() != sitk_label.GetDirection():
@@ -69,7 +73,11 @@ class Dataset_Union_ALL(Dataset):
                                         target_shape=(self.image_size,self.image_size,self.image_size))(subject)
 
         if subject.label.data.sum() <= self.threshold:
-            return self.__getitem__(np.random.randint(self.__len__()))
+                print(f"Sample {index} below threshold, selecting new sample")
+                return self.__getitem__(np.random.randint(self.__len__()))
+            
+        # print(f"Returning sample {index}")
+        # return subject.image.data.clone().detach(), subject.label.data.clone().detach()
         
         if self.mode == "train" and self.data_type == 'Tr':
             return subject.image.data.clone().detach(), subject.label.data.clone().detach()
