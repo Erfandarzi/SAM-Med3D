@@ -138,18 +138,18 @@ class ImageEncoderViT3D(nn.Module):
         if self.pos_embed is not None:
             x = x + self.pos_embed  # Add position embedding if exists
 
-        interm_embeddings = []  # Initialize a list to hold intermediate embeddings
+        # interm_embeddings = []  # Initialize a list to hold intermediate embeddings
         for blk in self.blocks:
             x = blk(x)  # Process input through each block
             # Optionally capture intermediate embeddings. For example, you might want to capture:
             # - After specific blocks
             # - After blocks with specific characteristics (e.g., a certain type of layer or configuration)
             # Here, as an example, we're capturing after every block, but you might want to use a condition
-            interm_embeddings.append(x.clone())  # Clone to ensure it's not modified by subsequent layers
+            # interm_embeddings.append(x.clone())  # Clone to ensure it's not modified by subsequent layers
 
         x = self.neck(x.permute(0, 4, 1, 2, 3))  # Process through the neck, adjust dimensions as needed
         # Adjust the permute for 5D tensor: [batch size, channels, depth, height, width]
-        vit_features = interm_embeddings[0].permute(0, 1, 2, 3, 4)
+        # vit_features = interm_embeddings[0].permute(0, 1, 2, 3, 4)
 
         return x
 
@@ -441,3 +441,5 @@ class PatchEmbed3D(nn.Module):
         # B C X Y Z -> B X Y Z C
         x = x.permute(0, 2, 3, 4, 1)
         return x
+
+

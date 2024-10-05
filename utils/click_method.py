@@ -122,7 +122,61 @@ def get_next_click3D_torch_2(prev_seg, gt_semantic_seg):
 
     return batch_points, batch_labels # , (sum(dice_list)/len(dice_list)).item()    
 
+def get_uncertainty_map(prev_seg):
+    prob_maps = torch.sigmoid(prev_seg)
+    entropy = -(prob_maps * torch.log(prob_maps + 1e-10) + (1 - prob_maps) * torch.log(1 - prob_maps + 1e-10))
+    return entropy
 
+def get_next_click3D_torch_adaptive(prev_seg, gt_semantic_seg, num_points=1):
+    print(f"Input shapes: prev_seg {prev_seg.shape}, gt_semantic_seg {gt_semantic_seg.shape}")
+    print(f"Device: {prev_seg.device}")
+    
+    batch_size = prev_seg.shape[0]
+    device = prev_seg.device
+    mask_threshold = 0.5
+
+    batch_points = []
+    batch_labels = []
+
+    pred_masks = (prev_seg > mask_threshold)
+    true_masks = (gt_semantic_seg > 0)
+    fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
+    fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
+
+    for i in range(batch_size):
+        print(f"Processing batch item {i}")
+        
+        # Calculate uncertainty map
+        prob = torch.sigmoid(prev_seg[i, 0])
+        uncertainty = -(prob * torch.log(prob + 1e-6) + (1 - prob) * torch.log(1 - prob + 1e-6))
+        
+        # Combine uncertainty with error regions
+        fn_sampling_map = uncertainty * fn_masks[i, 0].float()
+        fp_sampling_map = uncertainty * fp_masks[i, 0].float()
+
+        # Flatten and normalize the sampling map
+        sampling_map = fn_sampling_map + fp_sampling_map
+        flat_map = sampling_map.view(-1)
+        flat_map = flat_map / (flat_map.sum() + 1e-10)
+
+        # Sample an index based on the normalized map
+        index = torch.multinomial(flat_map, 1)
+
+        # Convert flat index back to 3D coordinates
+        z = index // (sampling_map.shape[1] * sampling_map.shape[2])
+        y = (index % (sampling_map.shape[1] * sampling_map.shape[2])) // sampling_map.shape[2]
+        x = index % sampling_map.shape[2]
+        point = torch.stack([z, y, x]).reshape(1, 1, 3)
+
+        is_positive = fn_masks[i, 0, point[0, 0, 0], point[0, 0, 1], point[0, 0, 2]].item()
+
+        batch_points.append(point)
+        batch_labels.append(torch.tensor([[int(is_positive)]], device=device))
+
+        print(f"Batch item {i}: Selected point shape {point.shape}")
+
+    print(f"Final shapes: batch_points {len(batch_points)}, batch_labels {len(batch_labels)}")
+    return batch_points, batch_labels
 def get_next_click3D_torch_with_dice(prev_seg, gt_semantic_seg):
 
     def compute_dice(mask_pred, mask_gt):

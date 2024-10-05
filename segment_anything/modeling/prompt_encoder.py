@@ -1,5 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
+# ll rights reserved.
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
@@ -113,23 +112,26 @@ class PromptEncoder(nn.Module):
         mask_embedding = self.mask_downscaling(masks)
         return mask_embedding
 
-    def _get_batch_size(
-        self,
-        points: Optional[Tuple[torch.Tensor, torch.Tensor]],
-        boxes: Optional[torch.Tensor],
-        masks: Optional[torch.Tensor],
-    ) -> int:
-        """
-        Gets the batch size of the output given the batch size of the input prompts.
-        """
+    def _get_batch_size(self, points, boxes, masks):
+        logger.debug(f"Starting _get_batch_size method")
+        logger.debug(f"points: {type(points)}")
+        logger.debug(f"boxes: {type(boxes)}")
+        logger.debug(f"masks: {type(masks)}")
+
         if points is not None:
-            return points[0].shape[0]
+            if isinstance(points, tuple) and len(points) == 2:
+                return points[0].shape[0]
+            else:
+                raise ValueError(f"Expected points to be a tuple of two tensors, got {type(points)}")
         elif boxes is not None:
             return boxes.shape[0]
         elif masks is not None:
             return masks.shape[0]
         else:
             return 1
+
+        logger.debug(f"Returning batch size: {bs}")
+        return bs
 
     def _get_device(self) -> torch.device:
         return self.point_embeddings[0].weight.device
