@@ -1,0 +1,9 @@
+usage: validation.py [-h] [-tdp TEST_DATA_PATH] [-vp VIS_PATH]
+                     [-cp CHECKPOINT_PATH] [--save_name SAVE_NAME]
+                     [--image_size IMAGE_SIZE] [--crop_size CROP_SIZE]
+                     [--device DEVICE] [-mt MODEL_TYPE] [-nc NUM_CLICKS]
+                     [-pm POINT_METHOD] [-dt DATA_TYPE]
+                     [--threshold THRESHOLD] [--dim DIM]
+                     [--split_idx SPLIT_IDX] [--split_num SPLIT_NUM] [--ft2d]
+                     [--seed SEED]
+validation.py: error: unrecognized arguments: --batch_size 1

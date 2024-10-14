@@ -19,6 +19,10 @@ import json
 import pickle
 from utils.click_method import get_next_click3D_torch_ritm, get_next_click3D_torch_2
 from utils.data_loader import Dataset_Union_ALL_Val
+import torchio as tio
+import psutil
+import gc
+from torch.cuda.amp import autocast
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-tdp', '--test_data_path', type=str, default='./data/validation')
@@ -56,13 +60,16 @@ click_methods = {
     'ritm': get_next_click3D_torch_ritm,
     'random': get_next_click3D_torch_2,
 }
+norm_transform = tio.ZNormalization(masking_method=lambda x: x > 0)
 
 def compute_iou(pred_mask, gt_semantic_seg):
     in_mask = np.logical_and(gt_semantic_seg, pred_mask)
     out_mask = np.logical_or(gt_semantic_seg, pred_mask)
     iou = np.sum(in_mask) / np.sum(out_mask)
     return iou
-
+def clear_memory():
+    gc.collect()
+    torch.cuda.empty_cache()
 def compute_dice(mask_gt, mask_pred):
     """Compute soerensen-dice coefficient.
     Returns:
@@ -185,8 +192,19 @@ def random_point_sampling(mask, get_point = 1):
         indices = np.random.permutation(get_point)
         coords, labels = torch.as_tensor(coords[indices], dtype=torch.float), torch.as_tensor(labels[indices], dtype=torch.int)
         return coords, labels
-
-
+def log_memory():
+    print(f"CPU Memory: {psutil.virtual_memory().percent}%")
+    if torch.cuda.is_available():
+        try:
+            allocated = torch.cuda.memory_allocated()
+            max_allocated = torch.cuda.max_memory_allocated()
+            if max_allocated > 0:
+                percentage = (allocated / max_allocated) * 100
+                print(f"GPU Memory: {percentage:.2f}%")
+            else:
+                print("GPU Memory: 0.00% (No memory allocated yet)")
+        except Exception as e:
+            print(f"Error getting GPU memory: {e}")
 def finetune_model_predict2D(img3D, gt3D, sam_model_tune, target_size=256, click_method='random', device='cuda', num_clicks=1, prev_masks=None):
     pred_list = []
     iou_list = []
@@ -255,7 +273,7 @@ def finetune_model_predict2D(img3D, gt3D, sam_model_tune, target_size=256, click
 
 
 def finetune_model_predict3D(img3D, gt3D, sam_model_tune, device='cuda', click_method='random', num_clicks=10, prev_masks=None):
-    img3D = norm_transform(img3D.squeeze(dim=1)) # (N, C, W, H, D)
+    img3D = norm_transform(img3D.squeeze(dim=1))  # (N, C, W, H, D)
     img3D = img3D.unsqueeze(dim=1)
 
     click_points = []
@@ -267,13 +285,16 @@ def finetune_model_predict3D(img3D, gt3D, sam_model_tune, device='cuda', click_m
     dice_list = []
     if prev_masks is None:
         prev_masks = torch.zeros_like(gt3D).to(device)
-    low_res_masks = F.interpolate(prev_masks.float(), size=(args.crop_size//4,args.crop_size//4,args.crop_size//4))
+    
+    # Calculate target size dynamically
+    target_size = (img3D.shape[-3]//4, img3D.shape[-2]//4, img3D.shape[-1]//4)
+    low_res_masks = F.interpolate(prev_masks.float(), size=target_size, mode='trilinear', align_corners=False)
 
     with torch.no_grad():
-        image_embedding = sam_model_tune.image_encoder(img3D.to(device)) # (1, 384, 16, 16, 16)
+        image_embedding = sam_model_tune.image_encoder(img3D.to(device))  # (1, 384, 16, 16, 16)
     for num_click in range(num_clicks):
         with torch.no_grad():
-            if(num_click>1):
+            if num_click > 1:
                 click_method = "random"
             batch_points, batch_labels = click_methods[click_method](prev_masks.to(device), gt3D.to(device))
 
@@ -292,12 +313,12 @@ def finetune_model_predict3D(img3D, gt3D, sam_model_tune, device='cuda', click_m
                 masks=low_res_masks.to(device),
             )
             low_res_masks, _ = sam_model_tune.mask_decoder(
-                image_embeddings=image_embedding.to(device), # (B, 384, 64, 64, 64)
-                image_pe=sam_model_tune.prompt_encoder.get_dense_pe(), # (1, 384, 64, 64, 64)
-                sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 384)
-                dense_prompt_embeddings=dense_embeddings, # (B, 384, 64, 64, 64)
+                image_embeddings=image_embedding.to(device),  # (B, 384, 64, 64, 64)
+                image_pe=sam_model_tune.prompt_encoder.get_dense_pe(),  # (1, 384, 64, 64, 64)
+                sparse_prompt_embeddings=sparse_embeddings,  # (B, 2, 384)
+                dense_prompt_embeddings=dense_embeddings,  # (B, 384, 64, 64, 64)
                 multimask_output=False,
-                )
+            )
             prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode='trilinear', align_corners=False)
 
             medsam_seg_prob = torch.sigmoid(prev_masks)  # (B, 1, 64, 64, 64)
@@ -310,7 +331,6 @@ def finetune_model_predict3D(img3D, gt3D, sam_model_tune, device='cuda', click_m
             dice_list.append(round(compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg), 4))
 
     return pred_list, click_points, click_labels, iou_list, dice_list
-
 if __name__ == "__main__":    
     all_dataset_paths = glob(join(args.test_data_path, "*", "*"))
     all_dataset_paths = list(filter(os.path.isdir, all_dataset_paths))
@@ -367,100 +387,103 @@ if __name__ == "__main__":
     
     skipped_cases = []  # List to keep track of skipped cases
 
+    with autocast():
 
-    for batch_data in tqdm(test_dataloader):
-        try:
-            image3D, gt3D, img_name = batch_data
-            sz = image3D.size()
-            if(sz[2]<args.crop_size or sz[3]<args.crop_size or sz[4]<args.crop_size):
-                print("[ERROR] wrong size", sz, "for", img_name)
-            modality = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(img_name[0]))))
-            dataset = os.path.basename(os.path.dirname(os.path.dirname(img_name[0])))
-            vis_root = os.path.join(os.path.dirname(__file__), args.vis_path, modality, dataset)
-            pred_path = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}.nii.gz"))
-            visualization_base_dir = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}"))
+        for batch_data in tqdm(test_dataloader):
+            try:
+                image3D, gt3D, img_name = batch_data
+                sz = image3D.size()
+                if(sz[2]<args.crop_size or sz[3]<args.crop_size or sz[4]<args.crop_size):
+                    print("[ERROR] wrong size", sz, "for", img_name)
+                modality = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(img_name[0]))))
+                dataset = os.path.basename(os.path.dirname(os.path.dirname(img_name[0])))
+                vis_root = os.path.join(os.path.dirname(__file__), args.vis_path, modality, dataset)
+                pred_path = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}.nii.gz"))
+                visualization_base_dir = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}"))
 
-            if(os.path.exists(pred_path)):
-                iou_list, dice_list = [], []
-                for iter in range(args.num_clicks):
-                    curr_pred_path = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{iter}.nii.gz"))
-                    medsam_seg = sitk.GetArrayFromImage(sitk.ReadImage(curr_pred_path))
-                    iou_list.append(round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4))
-                    dice_list.append(round(compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg), 4))
-            else:
-                norm_transform = tio.ZNormalization(masking_method=lambda x: x > 0)
-                if(args.dim==3):
-                    seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict3D(
-                        image3D, gt3D, sam_model_tune, device=device, 
-                        click_method=args.point_method, num_clicks=args.num_clicks, 
-                        prev_masks=None)
-                    if visualization_counter < max_visualizations:
-                        slice_idx = image3D.shape[-1] // 2  # Assuming last dimension is the depth
-                        input_slice = image3D[0, 0, :, :, slice_idx].cpu().numpy()
-                        gt_slice = gt3D[0, 0, :, :, slice_idx].cpu().numpy()
-                        pred_slice = seg_mask_list[-1][:, :, slice_idx]  # Assuming the last prediction
-                        save_path = visualization_base_dir+"_"+f'visualization_slice_{slice_idx}.png'
+                if(os.path.exists(pred_path)):
+                    iou_list, dice_list = [], []
+                    for iter in range(args.num_clicks):
+                        curr_pred_path = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{iter}.nii.gz"))
+                        medsam_seg = sitk.GetArrayFromImage(sitk.ReadImage(curr_pred_path))
+                        iou_list.append(round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4))
+                        dice_list.append(round(compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg), 4))
+                else:
+                    norm_transform = tio.ZNormalization(masking_method=lambda x: x > 0)
+                    if(args.dim==3):
+                        seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict3D(
+                            image3D, gt3D, sam_model_tune, device=device, 
+                            click_method=args.point_method, num_clicks=args.num_clicks, 
+                            prev_masks=None)
+                        if visualization_counter < max_visualizations:
+                            slice_idx = image3D.shape[-1] // 2  # Assuming last dimension is the depth
+                            input_slice = image3D[0, 0, :, :, slice_idx].cpu().numpy()
+                            gt_slice = gt3D[0, 0, :, :, slice_idx].cpu().numpy()
+                            pred_slice = seg_mask_list[-1][:, :, slice_idx]  # Assuming the last prediction
+                            save_path = visualization_base_dir+"_"+f'visualization_slice_{slice_idx}.png'
 
 
-                        # Call the visualization function
-                        visualize_slices(input_slice, gt_slice, pred_slice, slice_idx, save_path)
+                            # Call the visualization function
+                            visualize_slices(input_slice, gt_slice, pred_slice, slice_idx, save_path)
 
-                        visualization_counter += 1
-                elif(args.dim==2):
-                    seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict2D(
-                        image3D, gt3D, sam_model_tune, device=device, target_size=args.image_size,
-                        click_method=args.point_method, num_clicks=args.num_clicks, 
-                        prev_masks=None)
-                os.makedirs(vis_root, exist_ok=True)
-                points = [p.cpu().numpy() for p in points]
-                labels = [l.cpu().numpy() for l in labels]
-                pt_info = dict(points=points, labels=labels)
-                print("save to", os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", "_pred.nii.gz")))
-                pt_path=os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", "_pt.pkl"))
-                pickle.dump(pt_info, open(pt_path, "wb"))
-                for idx, pred3D in enumerate(seg_mask_list):
-                    out = sitk.GetImageFromArray(pred3D)
-                    sitk.WriteImage(out, os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{idx}.nii.gz")))
+                            visualization_counter += 1
+                    elif(args.dim==2):
+                        seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict2D(
+                            image3D, gt3D, sam_model_tune, device=device, target_size=args.image_size,
+                            click_method=args.point_method, num_clicks=args.num_clicks, 
+                            prev_masks=None)
+                    os.makedirs(vis_root, exist_ok=True)
+                    points = [p.cpu().numpy() for p in points]
+                    labels = [l.cpu().numpy() for l in labels]
+                    pt_info = dict(points=points, labels=labels)
+                    print("save to", os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", "_pred.nii.gz")))
+                    pt_path=os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", "_pt.pkl"))
+                    pickle.dump(pt_info, open(pt_path, "wb"))
+                    for idx, pred3D in enumerate(seg_mask_list):
+                        out = sitk.GetImageFromArray(pred3D)
+                        sitk.WriteImage(out, os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{idx}.nii.gz")))
 
-            per_iou = max(iou_list)
-            all_iou_list.append(per_iou)
-            all_dice_list.append(max(dice_list))
-            print(dice_list)
-            out_dice[img_name] = max(dice_list)
-            cur_dice_dict = OrderedDict()
-            for i, dice in enumerate(dice_list):
-                cur_dice_dict[f'{i}'] = dice
-            out_dice_all[img_name[0]] = cur_dice_dict
+                clear_memory()
+                log_memory()
+                per_iou = max(iou_list)
+                all_iou_list.append(per_iou)
+                all_dice_list.append(max(dice_list))
+                print(dice_list)
+                out_dice[img_name] = max(dice_list)
+                cur_dice_dict = OrderedDict()
+                for i, dice in enumerate(dice_list):
+                    cur_dice_dict[f'{i}'] = dice
+                out_dice_all[img_name[0]] = cur_dice_dict
 
-        except Exception as e:
-            print(f"Error processing {img_name}: {e}")
-            skipped_cases.append(img_name[0])
+            except Exception as e:
+                print(f"Error processing {img_name}: {e}")
+                skipped_cases.append(img_name[0])
 
-    print('Mean IoU : ', sum(all_iou_list)/len(all_iou_list))
-    print('Mean Dice: ', sum(all_dice_list)/len(all_dice_list))
-    print("Skipped cases due to errors:")
-    for case in skipped_cases:
-        print(case)
-    final_dice_dict = OrderedDict()
-    for k, v in out_dice_all.items():
-        organ = k.split('/')[-4]
-        final_dice_dict[organ] = OrderedDict()
-    for k, v in out_dice_all.items():
-        organ = k.split('/')[-4]
-        final_dice_dict[organ][k] = v
+        print('Mean IoU : ', sum(all_iou_list)/len(all_iou_list))
+        print('Mean Dice: ', sum(all_dice_list)/len(all_dice_list))
+        print("Skipped cases due to errors:")
+        for case in skipped_cases:
+            print(case)
+        final_dice_dict = OrderedDict()
+        for k, v in out_dice_all.items():
+            organ = k.split('/')[-4]
+            final_dice_dict[organ] = OrderedDict()
+        for k, v in out_dice_all.items():
+            organ = k.split('/')[-4]
+            final_dice_dict[organ][k] = v
 
-    if(args.split_num>1):
-        args.save_name = args.save_name.replace('.py', f'_s{args.split_num}i{args.split_idx}.py')
+        if(args.split_num>1):
+            args.save_name = args.save_name.replace('.py', f'_s{args.split_num}i{args.split_idx}.py')
 
-    print("Save to", args.save_name)
-    with open(args.save_name, 'w') as f:
-        f.writelines(f'# mean dice: \t{np.mean(all_dice_list)}\n')
-        f.writelines('dice_Ts = {')
-        for k, v in out_dice.items():
-            f.writelines(f'\'{str(k[0])}\': {v},\n')
-        f.writelines('}')
+        print("Save to", args.save_name)
+        with open(args.save_name, 'w') as f:
+            f.writelines(f'# mean dice: \t{np.mean(all_dice_list)}\n')
+            f.writelines('dice_Ts = {')
+            for k, v in out_dice.items():
+                f.writelines(f'\'{str(k[0])}\': {v},\n')
+            f.writelines('}')
 
-    with open(args.save_name.replace('.py', '.json'), 'w') as f:
-        json.dump(final_dice_dict, f, indent=4)
+        with open(args.save_name.replace('.py', '.json'), 'w') as f:
+            json.dump(final_dice_dict, f, indent=4)
 
-    print("Done")
+        print("Done")

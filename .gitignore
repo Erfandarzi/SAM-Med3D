@@ -1,6 +1,6 @@
 data/train/*
 ckpt/*
-results/*
+# results/*
 work_dir/*
 */__pycache__/*
 __pycache__/*
@@ -33,9 +33,15 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+../LMa-UNet/*
+LMa-UNet/*
+LMa-UNet
+SaM-Med3D_HQ/*
+U-Mamba/*
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
+#  Usually these
+ files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
@@ -167,3 +173,8 @@ data/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+*.pt 
+*.gz
+
+*.pkl 
+*.png 
